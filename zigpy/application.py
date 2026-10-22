@@ -65,6 +65,11 @@ DeviceResolver = Callable[[BaseDevice], BaseDevice]
 CHANNEL_CHANGE_BROADCAST_DELAY_S = 1.0
 CHANNEL_CHANGE_SETTINGS_RELOAD_DELAY_S = 1.0
 
+# Looking up the IEEE address of an unknown NWK is a network-wide broadcast. Repeat it
+# for the same NWK no sooner than this, doubling the wait after every lookup.
+UNKNOWN_DEVICE_DISCOVERY_MIN_INTERVAL_S = 60
+UNKNOWN_DEVICE_DISCOVERY_MAX_INTERVAL_S = 24 * 60 * 60
+
 # Entry point group used by radio libraries to advertise their controller class:
 # the entry point name is the radio type and its value is the controller class
 RADIO_ENTRY_POINT_GROUP = "zigpy.radio"
@@ -108,6 +113,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         self._uninitialized_packet_handler: Callable[..., None] | None = None
 
         self._watchdog_task: asyncio.Task | None = None
+
+        # Unknown NWK -> (earliest next IEEE address lookup, current wait)
+        self._unknown_device_discovery: dict[t.NWK, tuple[float, float]] = {}
 
         self._concurrent_requests_semaphore = RequestLimiter(
             max_concurrency=self._config[conf.CONF_MAX_CONCURRENT_REQUESTS],
@@ -931,6 +939,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         # A device that is not blocked now owns this address
         self._blocked_device_nwks.pop(nwk, None)
 
+        # The NWK is known now, so a later lookup of it must not wait out a backoff
+        self._unknown_device_discovery.pop(nwk, None)
+
         try:
             dev = self.get_device(ieee=ieee)
         except KeyError:
@@ -1509,6 +1520,27 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
 
     async def _discover_unknown_device(self, nwk: t.NWK) -> None:
         """Discover the IEEE address of a device with an unknown NWK."""
+
+        # The request is a network-wide broadcast. A device that keeps talking from an
+        # address it never announces, or a stale address in a neighbor or routing
+        # table, must not trigger one per packet or per topology scan: back off per
+        # NWK until the address becomes known.
+        now = time.monotonic()
+        next_lookup, interval = self._unknown_device_discovery.get(nwk, (now, 0.0))
+
+        if now < next_lookup:
+            LOGGER.debug(
+                "Skipping the IEEE address lookup of unknown NWK %s for %0.0fs",
+                nwk,
+                next_lookup - now,
+            )
+            return None
+
+        interval = min(
+            max(2 * interval, UNKNOWN_DEVICE_DISCOVERY_MIN_INTERVAL_S),
+            UNKNOWN_DEVICE_DISCOVERY_MAX_INTERVAL_S,
+        )
+        self._unknown_device_discovery[nwk] = (now + interval, interval)
 
         return await zigpy.zdo.broadcast(
             app=self,

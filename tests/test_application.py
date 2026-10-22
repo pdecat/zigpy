@@ -1301,6 +1301,57 @@ async def test_packet_received_new_device_discovery(app, device, zdo_packet):
 
 
 @patch("zigpy.device.Device.initialize", AsyncMock())
+async def test_discover_unknown_device_backoff(app):
+    app.send_packet = AsyncMock()
+
+    def lookups() -> int:
+        return sum(
+            c.args[0].cluster_id == zdo_t.ZDOCmd.IEEE_addr_req
+            for c in app.send_packet.mock_calls
+        )
+
+    with patch("zigpy.application.time") as mock_time:
+        mock_time.monotonic.return_value = 1000.0
+
+        # A burst of packets from the same unknown NWK sends a single lookup
+        for _ in range(5):
+            await app._discover_unknown_device(0x1234)
+        assert lookups() == 1
+
+        # Another unknown NWK is not held back by the first one
+        await app._discover_unknown_device(0x5678)
+        assert lookups() == 2
+
+        # The wait doubles after every lookup: 60 s, then 120 s
+        mock_time.monotonic.return_value = 1000.0 + 60
+        await app._discover_unknown_device(0x1234)
+        assert lookups() == 3
+
+        mock_time.monotonic.return_value = 1000.0 + 60 + 119
+        await app._discover_unknown_device(0x1234)
+        assert lookups() == 3
+
+        mock_time.monotonic.return_value = 1000.0 + 60 + 120
+        await app._discover_unknown_device(0x1234)
+        assert lookups() == 4
+
+        # The wait never exceeds a day
+        for _ in range(20):
+            next_lookup, _ = app._unknown_device_discovery[0x5678]
+            mock_time.monotonic.return_value = next_lookup
+            await app._discover_unknown_device(0x5678)
+        assert app._unknown_device_discovery[0x5678][1] == (
+            zigpy.application.UNKNOWN_DEVICE_DISCOVERY_MAX_INTERVAL_S
+        )
+
+        # Once the NWK joins, a later lookup of it goes out at once
+        count = lookups()
+        app.handle_join(nwk=0x1234, ieee=t.EUI64(range(8)), parent_nwk=None)
+        await app._discover_unknown_device(0x1234)
+        assert lookups() == count + 1
+
+
+@patch("zigpy.device.Device.initialize", AsyncMock())
 async def test_packet_received_ieee_no_rejoin(app, device, zdo_packet, caplog):
     device.is_initialized = True
     app.devices[device.ieee] = device
