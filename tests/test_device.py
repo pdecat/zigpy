@@ -1903,6 +1903,60 @@ async def test_poll_control_checkin_response_not_retried(
     assert "callback failed" not in caplog.text
 
 
+async def test_default_response_not_retried(
+    app_mock: zigpy.application.ControllerApplication,
+) -> None:
+    """Test a default response to an attribute report that fails to send is not retried."""
+    dev = add_initialized_device(app_mock, nwk=0x1234, ieee=make_ieee(1))
+    on_off = dev.endpoints[1].add_input_cluster(OnOff.cluster_id)
+
+    app_mock.send_packet = AsyncMock(
+        side_effect=zigpy.exceptions.DeliveryError(
+            "Failed to send request: APS_NO_ACK", status=0xB7
+        )
+    )
+
+    hdr = foundation.ZCLHeader.general(
+        tsn=0x12,
+        command_id=foundation.GeneralCommand.Report_Attributes,
+        direction=foundation.Direction.Server_to_Client,
+    )
+    hdr.frame_control = hdr.frame_control.replace(disable_default_response=False)
+    report = foundation.GENERAL_COMMANDS[
+        foundation.GeneralCommand.Report_Attributes
+    ].schema(
+        attribute_reports=[
+            foundation.Attribute(
+                attrid=OnOff.AttributeDefs.on_off.id,
+                value=foundation.TypeValue(
+                    type=foundation.DataTypeId.bool_, value=t.Bool.true
+                ),
+            )
+        ]
+    )
+
+    app_mock.packet_received(
+        t.ZigbeePacket(
+            src=t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=dev.nwk),
+            src_ep=1,
+            dst=t.AddrModeAddress(addr_mode=t.AddrMode.NWK, address=0x0000),
+            dst_ep=1,
+            tsn=0x12,
+            profile_id=zha.PROFILE_ID,
+            cluster_id=OnOff.cluster_id,
+            data=t.SerializableBytes(hdr.serialize() + report.serialize()),
+            lqi=255,
+            rssi=-30,
+        )
+    )
+
+    # Wait for the default response task to finish
+    await asyncio.gather(*on_off._tasks)
+
+    assert on_off.get(OnOff.AttributeDefs.on_off.name) == t.Bool.true
+    assert len(app_mock.send_packet.mock_calls) == 1
+
+
 async def test_begin_fast_polling_with_cluster(dev: device.Device) -> None:
     """Test beginning fast polling when PollControl cluster exists."""
     ep = dev.add_endpoint(1)

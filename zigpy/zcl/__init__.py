@@ -2176,7 +2176,10 @@ class Cluster(util.ListenableMixin, util.CatchingTaskMixin, EventBase):
                 status,
                 tsn=hdr.tsn,
                 priority=t.PacketPriority.LOW,
-                retries=self.endpoint.device.reply_retries,
+                # A lost default response is harmless, while retrying one holds the
+                # device's request slot as more reports needing a response arrive,
+                # for routers as much as for sleepy end devices
+                retries=0,
             )
         )
 

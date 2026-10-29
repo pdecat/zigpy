@@ -964,6 +964,7 @@ async def test_handle_cluster_general_request_disable_default_rsp(endpoint):
         assert len(event_listener.mock_calls) > 0
         assert general_cmd_mock.call_count == 1
         assert general_cmd_mock.call_args[1]["tsn"] == hdr.tsn
+        assert general_cmd_mock.call_args[1]["retries"] == 0
 
 
 async def test_handle_cluster_general_request_default_rsp_not_answered(cluster):
@@ -1001,7 +1002,7 @@ async def test_handle_cluster_general_request_not_attr_report(cluster):
                 foundation.Status.SUCCESS,
                 tsn=mock.ANY,
                 priority=t.PacketPriority.LOW,
-                retries=cluster.endpoint.device.reply_retries,
+                retries=0,
             )
         ]
 
@@ -1010,14 +1011,14 @@ async def test_handle_cluster_general_request_not_attr_report(cluster):
     ("logical_type", "rx_on_when_idle", "expected_retries"),
     [
         (zdo_t.LogicalType.EndDevice, False, 0),
-        (zdo_t.LogicalType.EndDevice, True, None),
-        (zdo_t.LogicalType.Router, False, None),
+        (zdo_t.LogicalType.EndDevice, True, 0),
+        (zdo_t.LogicalType.Router, False, 0),
     ],
 )
 async def test_send_default_rsp_retries(
     logical_type, rx_on_when_idle, expected_retries
 ) -> None:
-    """Default responses are not retried for devices that may be asleep."""
+    """Default responses are never retried, whatever the device type."""
     app = make_app({})
     dev = add_initialized_device(
         app, nwk=0x1234, ieee=t.EUI64.convert("00:11:22:33:44:55:66:77")
@@ -1891,7 +1892,7 @@ async def test_received_onoff_toggle_generates_default_response():
             use_ieee=False,
             ask_for_ack=None,
             priority=t.PacketPriority.LOW,
-            retries=None,
+            retries=0,
             retry_delay=None,
             aps_encryption=False,
         )
