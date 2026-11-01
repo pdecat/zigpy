@@ -244,7 +244,17 @@ class Topology(zigpy.util.ListenableMixin):
             try:
                 self._app.get_device(nwk=neighbor.nwk)
             except KeyError:
-                unknown_nwks.add(neighbor.nwk)
+                pass
+            else:
+                continue
+
+            # A known device listed under another address is an old address left in
+            # the neighbor's table. A device that really moved announces itself, or
+            # is looked up as soon as it sends from its new address.
+            if neighbor.ieee in self._app.devices:
+                continue
+
+            unknown_nwks.add(neighbor.nwk)
 
         for route in itertools.chain.from_iterable(routes.values()):
             # Ignore inactive or pending routes
