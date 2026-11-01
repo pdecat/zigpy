@@ -502,3 +502,45 @@ async def test_stop_periodic_scans_during_scheduled_scan(topology):
             assert topology._scan_task.cancelled()
         finally:
             await scans.cleanup(topology)
+
+
+@mock.patch("zigpy.application.ControllerApplication._discover_unknown_device")
+async def test_discover_ignores_removed_devices(
+    discover_unknown_device, topology, make_initialized_device
+) -> None:
+    """Tables held by a device that is no longer in the network are not used."""
+    dev1 = make_initialized_device(topology._app)
+    removed = t.EUI64.convert("aa:bb:cc:dd:11:22:33:55")
+
+    await topology._find_unknown_devices(
+        neighbors={
+            dev1.ieee: [],
+            removed: [
+                make_neighbor(
+                    ieee=t.EUI64.convert("aa:bb:cc:dd:11:22:33:44"), nwk=0xFF00
+                )
+            ],
+        },
+        routes={
+            dev1.ieee: [],
+            removed: [make_route(dest_nwk=0xFF01, next_hop=0xFF02)],
+        },
+    )
+
+    assert discover_unknown_device.mock_calls == []
+
+
+async def test_remove_device_forgets_tables(topology, make_initialized_device) -> None:
+    """Removing a device drops its neighbor and route tables."""
+    dev = make_initialized_device(topology._app)
+    topology.neighbors[dev.ieee] = [make_neighbor(ieee=dev.ieee, nwk=0x1234)]
+    topology.routes[dev.ieee] = [make_route(dest_nwk=0x1234, next_hop=0x1234)]
+    topology._neighbors_unsupported.add(dev.ieee)
+    topology._routes_unsupported.add(dev.ieee)
+
+    topology.remove_device(dev.ieee)
+
+    assert dev.ieee not in topology.neighbors
+    assert dev.ieee not in topology.routes
+    assert dev.ieee not in topology._neighbors_unsupported
+    assert dev.ieee not in topology._routes_unsupported
