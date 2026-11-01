@@ -312,6 +312,17 @@ async def test_discover_new_devices(
     dev1 = make_initialized_device(topology._app)
     dev2 = make_initialized_device(topology._app)
 
+    topology.routes[dev1.ieee] = [
+        # Existing devices
+        make_route(dest_nwk=dev1.nwk, next_hop=dev1.nwk),
+        make_route(dest_nwk=dev2.nwk, next_hop=dev2.nwk),
+        # Unknown addresses in active routes
+        make_route(dest_nwk=0xFF01, next_hop=dev2.nwk),
+        make_route(dest_nwk=dev2.nwk, next_hop=0xFF02),
+        # Inactive route
+        make_route(dest_nwk=0xFF03, next_hop=0xFF04, status=zdo_t.RouteStatus.Inactive),
+    ]
+
     await topology._find_unknown_devices(
         neighbors={
             dev1.ieee: [
@@ -325,27 +336,10 @@ async def test_discover_new_devices(
             ],
             dev2.ieee: [],
         },
-        routes={
-            dev1.ieee: [
-                # Existing devices
-                make_route(dest_nwk=dev1.nwk, next_hop=dev1.nwk),
-                make_route(dest_nwk=dev2.nwk, next_hop=dev2.nwk),
-                # Via existing devices
-                make_route(dest_nwk=0xFF01, next_hop=dev2.nwk),
-                make_route(dest_nwk=dev2.nwk, next_hop=0xFF02),
-                # Inactive route
-                make_route(
-                    dest_nwk=0xFF03, next_hop=0xFF04, status=zdo_t.RouteStatus.Inactive
-                ),
-            ],
-            dev2.ieee: [],
-        },
     )
 
-    assert len(discover_unknown_device.mock_calls) == 3
-    assert mock.call(0xFF00) in discover_unknown_device.mock_calls
-    assert mock.call(0xFF01) in discover_unknown_device.mock_calls
-    assert mock.call(0xFF02) in discover_unknown_device.mock_calls
+    # Route tables are not used: their unknown addresses are stale ones
+    assert discover_unknown_device.mock_calls == [mock.call(0xFF00)]
 
 
 @mock.patch("zigpy.topology.Topology._scan")
@@ -521,10 +515,6 @@ async def test_discover_ignores_removed_devices(
                 )
             ],
         },
-        routes={
-            dev1.ieee: [],
-            removed: [make_route(dest_nwk=0xFF01, next_hop=0xFF02)],
-        },
     )
 
     assert discover_unknown_device.mock_calls == []
@@ -557,7 +547,6 @@ async def test_discover_skips_known_device_at_old_address(
 
     await topology._find_unknown_devices(
         neighbors={dev1.ieee: [make_neighbor(ieee=dev2.ieee, nwk=0xFF05)]},
-        routes={},
     )
 
     assert discover_unknown_device.mock_calls == []
