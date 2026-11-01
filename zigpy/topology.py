@@ -223,22 +223,27 @@ class Topology(zigpy.util.ListenableMixin):
             self.listener_event("routes_updated", device.ieee, self.routes[device.ieee])
 
         LOGGER.debug("Finished scanning neighbors for all devices")
-        await self._find_unknown_devices(neighbors=self.neighbors, routes=self.routes)
+        await self._find_unknown_devices(neighbors=self.neighbors)
 
     async def _find_unknown_devices(
         self,
         *,
         neighbors: dict[t.EUI64, list[zdo_t.Neighbor]],
-        routes: dict[t.EUI64, list[zdo_t.Route]],
     ) -> None:
-        """Discover unknown devices discovered during topology scanning"""
+        """Discover unknown devices discovered during topology scanning.
+
+        Only neighbor tables are used. A device in the network shows up, with its
+        IEEE address, in the neighbor table of every router that hears it, so route
+        tables name no device the neighbor tables miss. What they add are
+        destinations and next hops that have since changed address or left, which
+        some routers keep as active routes indefinitely, and no lookup can find.
+        """
         # Build a list of unknown devices from the topology scan
         unknown_nwks = set()
 
         # Tables of devices that have since been removed describe a network that no
         # longer exists, so only the current devices' tables are considered
         neighbors = {i: n for i, n in neighbors.items() if i in self._app.devices}
-        routes = {i: r for i, r in routes.items() if i in self._app.devices}
 
         for neighbor in itertools.chain.from_iterable(neighbors.values()):
             try:
@@ -255,17 +260,6 @@ class Topology(zigpy.util.ListenableMixin):
                 continue
 
             unknown_nwks.add(neighbor.nwk)
-
-        for route in itertools.chain.from_iterable(routes.values()):
-            # Ignore inactive or pending routes
-            if route.RouteStatus != zdo_t.RouteStatus.Active:
-                continue
-
-            for nwk in (route.DstNWK, route.NextHop):
-                try:
-                    self._app.get_device(nwk=nwk)
-                except KeyError:
-                    unknown_nwks.add(nwk)
 
         # Try to discover any unknown devices
         for nwk in unknown_nwks:
