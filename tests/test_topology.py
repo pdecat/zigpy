@@ -544,3 +544,20 @@ async def test_remove_device_forgets_tables(topology, make_initialized_device) -
     assert dev.ieee not in topology.routes
     assert dev.ieee not in topology._neighbors_unsupported
     assert dev.ieee not in topology._routes_unsupported
+
+
+@mock.patch("zigpy.application.ControllerApplication._discover_unknown_device")
+async def test_discover_skips_known_device_at_old_address(
+    discover_unknown_device, topology, make_initialized_device
+) -> None:
+    """A neighbor entry naming a known device under an old address is not looked up."""
+    dev1 = make_initialized_device(topology._app)
+    dev2 = make_initialized_device(topology._app)
+    assert dev2.nwk != 0xFF05
+
+    await topology._find_unknown_devices(
+        neighbors={dev1.ieee: [make_neighbor(ieee=dev2.ieee, nwk=0xFF05)]},
+        routes={},
+    )
+
+    assert discover_unknown_device.mock_calls == []
