@@ -51,6 +51,13 @@ class Topology(zigpy.util.ListenableMixin):
         )
         self.routes: dict[t.EUI64, list[zdo_t.Route]] = collections.defaultdict(list)
 
+    def remove_device(self, ieee: t.EUI64) -> None:
+        """Forget the neighbor and route tables of a removed device."""
+        self.neighbors.pop(ieee, None)
+        self.routes.pop(ieee, None)
+        self._neighbors_unsupported.discard(ieee)
+        self._routes_unsupported.discard(ieee)
+
     def start_periodic_scans(self, period: float) -> None:
         self.stop_periodic_scans()
         self._scan_loop_task = asyncio.create_task(self._scan_loop(period))
@@ -227,6 +234,11 @@ class Topology(zigpy.util.ListenableMixin):
         """Discover unknown devices discovered during topology scanning"""
         # Build a list of unknown devices from the topology scan
         unknown_nwks = set()
+
+        # Tables of devices that have since been removed describe a network that no
+        # longer exists, so only the current devices' tables are considered
+        neighbors = {i: n for i, n in neighbors.items() if i in self._app.devices}
+        routes = {i: r for i, r in routes.items() if i in self._app.devices}
 
         for neighbor in itertools.chain.from_iterable(neighbors.values()):
             try:

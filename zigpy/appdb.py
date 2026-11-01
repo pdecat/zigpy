@@ -495,6 +495,10 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
         self, device: Device, *, force_commit: bool = True
     ) -> None:
         await self.execute(f"DELETE FROM devices{DB_V} WHERE ieee = ?", (device.ieee,))
+        # Unlike the neighbors table, the routes table has no foreign key to cascade
+        await self.execute(
+            f"DELETE FROM routes{DB_V} WHERE device_ieee = ?", (device.ieee,)
+        )
         await self._commit(force=force_commit)
 
     def raw_device_initialized(self, device: Device) -> None:
@@ -1303,6 +1307,12 @@ class PersistingListener(zigpy.util.CatchingTaskMixin):
                 self._application.topology.neighbors[ieee].append(neighbor)
 
     async def _load_routes(self) -> None:
+        # Drop the routes of devices removed before their rows were deleted with them
+        await self.execute(
+            f"DELETE FROM routes{DB_V} WHERE device_ieee NOT IN"
+            f" (SELECT ieee FROM devices{DB_V})"
+        )
+
         async with self.execute(f"SELECT * FROM routes{DB_V}") as cursor:
             async for ieee, *fields in cursor:
                 route = zdo_t.Route(*fields)

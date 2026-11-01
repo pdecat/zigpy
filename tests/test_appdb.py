@@ -665,6 +665,46 @@ async def test_topology(tmp_path):
     await app2.shutdown()
 
 
+@patch.object(Device, "schedule_initialize", new=mock_dev_init(True))
+async def test_routes_removed_with_device(tmp_path):
+    """A removed device's routes are deleted, and orphaned rows are dropped on load."""
+
+    route = zdo_t.Route(
+        DstNWK=0x1234,
+        RouteStatus=zdo_t.RouteStatus.Active,
+        MemoryConstrained=0,
+        ManyToOne=0,
+        RouteRecordRequired=0,
+        Reserved=0,
+        NextHop=0x6789,
+    )
+
+    db = tmp_path / "test.db"
+    app = await make_app_with_db(db, commit_interval=0)
+    dev, _, _ = _add_joined_device(app)
+    row = {"where": "WHERE device_ieee = ?", "params": (str(dev.ieee),)}
+
+    app._dblistener.routes_updated(dev.ieee, [route])
+    await _wait_for_count(db, "routes", 1, **row)
+
+    app._dblistener.device_removed(dev)
+    await _wait_for_count(db, "routes", 0, **row)
+    await app.shutdown()
+
+    # Rows left behind by a removal before this fix are dropped at the next start
+    orphan = make_ieee(0x42)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            f"INSERT INTO routes{zigpy.appdb.DB_V} VALUES (?,?,?,?,?,?,?,?)",
+            (str(orphan), *route.as_tuple()),
+        )
+
+    app2 = await make_app_with_db(db)
+    assert orphan not in app2.topology.routes
+    assert await _read_count(db, "routes") == 0
+    await app2.shutdown()
+
+
 @patch("zigpy.device.Device.schedule_initialize", new=mock_dev_init(True))
 async def test_device_rejoin(tmp_path):
     db = tmp_path / "test.db"

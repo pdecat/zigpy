@@ -804,6 +804,7 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
                     parent.zdo.Mgmt_Leave_req(dev.ieee, opts)
                 )
 
+        self.topology.remove_device(ieee)
         self.listener_event("device_removed", dev)
 
     async def _remove_device(
