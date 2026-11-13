@@ -949,7 +949,9 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
 
             new_join = False
 
-        if dev.nwk != nwk:
+        nwk_changed = dev.nwk != nwk
+
+        if nwk_changed:
             LOGGER.debug("Device %s changed id (0x%04x => 0x%04x)", ieee, dev.nwk, nwk)
             dev.nwk = nwk
             new_join = True
@@ -958,10 +960,21 @@ class ControllerApplication(zigpy.util.ListenableMixin, CreateTaskMixin, abc.ABC
         # be updated
         dev.last_seen = datetime.now(UTC)
 
-        # Cancel all pending requests for the device
-        dev._concurrent_requests_semaphore.cancel_waiting(
-            zigpy.exceptions.DeliveryError("Device has re-joined the network")
-        )
+        if nwk_changed:
+            # Requests already sent went to the old address, and the queued ones belong
+            # to work started before the join (a sleepy device only listens for a few
+            # seconds after joining, so stale requests holding its slots make the new
+            # configuration miss that window). Fail all of them, without retries.
+            dev._cancel_requests(
+                zigpy.exceptions.DeviceAddressChanged(
+                    "Device has re-joined the network with a new address"
+                )
+            )
+        else:
+            # Cancel all pending requests for the device
+            dev._concurrent_requests_semaphore.cancel_waiting(
+                zigpy.exceptions.DeliveryError("Device has re-joined the network")
+            )
 
         if new_join:
             self.listener_event("device_joined", dev)
