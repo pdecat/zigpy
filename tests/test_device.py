@@ -2929,3 +2929,99 @@ async def test_update_last_seen_deprecated(dev) -> None:
         dev.update_last_seen()
 
     assert dev.last_seen is not None
+
+
+def _sleepy_device(app) -> device.Device:
+    dev = app.add_device(nwk=0x1234, ieee=t.EUI64.convert("aa:bb:cc:dd:ee:ff:00:11"))
+    dev.node_desc = make_node_desc(logical_type=zdo_t.LogicalType.EndDevice)
+    return dev
+
+
+async def _request(dev: device.Device, sequence: int) -> None:
+    await dev.request(
+        profile=0x0104,
+        cluster=0x0006,
+        src_ep=1,
+        dst_ep=1,
+        sequence=sequence,
+        data=foundation.ZCLHeader.cluster(sequence, 0x00).serialize(),
+    )
+
+
+def _onoff_sends(app) -> list:
+    """The test's own requests, not the ZDO ones a join's initialization sends."""
+    return [c for c in app.send_packet.mock_calls if c.args[0].cluster_id == 0x0006]
+
+
+async def _wait_for(predicate) -> None:
+    async with asyncio.timeout(1):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
+async def test_request_new_address_fails_sent_and_queued(app) -> None:
+    """A join with a new address fails the requests already sent and the queued ones."""
+    dev = _sleepy_device(app)
+    limiter = dev._concurrent_requests_semaphore
+
+    # Every request is sent fine but no reply ever comes (the device sleeps)
+    app.send_packet.side_effect = None
+
+    tasks = [asyncio.create_task(_request(dev, seq)) for seq in range(3)]
+
+    # Normal priority requests get part of the device's slots, the rest queue
+    await _wait_for(lambda: _onoff_sends(app) and limiter.waiting_requests > 0)
+    sent = len(_onoff_sends(app))
+    assert sent + limiter.waiting_requests == 3
+
+    app.handle_join(nwk=0x5678, ieee=dev.ieee, parent_nwk=0x0000)
+
+    # All fail at once, long before the 28 s end device reply timeout
+    async with asyncio.timeout(1):
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert all(isinstance(r, zigpy.exceptions.DeviceAddressChanged) for r in results)
+
+    # Nothing was retried, and the queued requests were never sent
+    assert len(_onoff_sends(app)) == sent
+    assert not any(k.cluster_id == 0x0006 for k in dev._requests)
+
+
+async def test_request_after_new_address_is_sent_at_once(app) -> None:
+    """After the address change, a new request is sent without waiting for old ones."""
+    dev = _sleepy_device(app)
+    limiter = dev._concurrent_requests_semaphore
+    app.send_packet.side_effect = None
+
+    old = [asyncio.create_task(_request(dev, seq)) for seq in range(3)]
+    await _wait_for(lambda: _onoff_sends(app) and limiter.waiting_requests > 0)
+    sent = len(_onoff_sends(app))
+
+    app.handle_join(nwk=0x5678, ieee=dev.ieee, parent_nwk=0x0000)
+
+    # The new configuration's first request must not wait out the old ones (up to
+    # 3 x 28 s each for an end device), the device only listens briefly after joining
+    new = asyncio.create_task(_request(dev, 0x42))
+    await _wait_for(lambda: len(_onoff_sends(app)) > sent)
+
+    # Sent to the new address
+    assert _onoff_sends(app)[-1].args[0].dst.address == 0x5678
+    new.cancel()
+    await asyncio.gather(new, *old, return_exceptions=True)
+
+
+async def test_request_same_address_rejoin_keeps_sent_request(app) -> None:
+    """A rejoin with the same address leaves a sent request waiting for its reply."""
+    dev = _sleepy_device(app)
+    app.send_packet.side_effect = None
+
+    task = asyncio.create_task(_request(dev, 0x10))
+    await _wait_for(lambda: _onoff_sends(app))
+
+    app.handle_join(nwk=dev.nwk, ieee=dev.ieee, parent_nwk=0x0000)
+    await asyncio.sleep(0.05)
+
+    assert not task.done()
+    assert any(k.cluster_id == 0x0006 and k.tsn == 0x10 for k in dev._requests)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)

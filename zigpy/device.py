@@ -865,6 +865,14 @@ class ZigbeeDevice(BaseDevice):
 
             yield
 
+    def _cancel_requests(self, exc: BaseException) -> None:
+        """Fail every request to this device: queued, and sent but awaiting a reply."""
+        self._concurrent_requests_semaphore.cancel_waiting(exc)
+
+        for future in self._requests.values():
+            if not future.done():
+                future.set_exception(exc)
+
     def get_sequence(self) -> int:
         self._send_sequence = (self._send_sequence + 1) % 256
         return self._send_sequence
@@ -1421,7 +1429,10 @@ class ZigbeeDevice(BaseDevice):
                         if not future.done():
                             future.cancel()
                         self._requests.pop(rsp_key, None)
-            except zigpy.exceptions.ParsingError:
+            except (
+                zigpy.exceptions.ParsingError,
+                zigpy.exceptions.DeviceAddressChanged,
+            ):
                 raise
             except Exception:
                 if not slot_acquired:

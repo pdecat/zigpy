@@ -42,6 +42,14 @@ class SendError(DeliveryError):
     """Message could not be enqueued."""
 
 
+class DeviceAddressChanged(DeliveryError):
+    """The device joined again with a new network address.
+
+    A request already sent went to the old address and can never be answered, and one
+    still queued belongs to work started before the join: neither is retried.
+    """
+
+
 class InvalidResponse(ZigbeeException):
     """A ZDO or ZCL response has an unsuccessful status code"""
 
